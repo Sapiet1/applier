@@ -1,7 +1,7 @@
 use std::{
     path::PathBuf,
     ffi::OsString,
-    io::{self, Write, ErrorKind},
+    io::ErrorKind,
     process::{self, Stdio},
     env,
 };
@@ -11,6 +11,8 @@ use clap::{Parser, Subcommand};
 use tokio::{
     fs::{self, DirEntry},
     process::Command,
+    io::{self, AsyncWriteExt},
+    sync::Mutex,
 };
 
 use tokio_stream::wrappers::ReadDirStream;
@@ -53,48 +55,76 @@ async fn main() {
         .collect::<Vec<_>>()
         .await;
 
-    ReadDirStream::new(entries).for_each_concurrent(None, |entry| {
-        let entry = entry;
-        async move {
-            match entry.as_ref().map(DirEntry::path) {
-                Ok(entry)
-                    if entry.is_dir() 
-                    && !stream::iter(ignored_directories).any(|path| {
-                        let entry = &entry;
-                        async move { fs::canonicalize(entry).await.is_ok_and(|entry| &entry == path) }
-                    })
-                    .await
-                => { 
-                    match Command::new(command)
-                        .current_dir(&entry)
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::piped())
-                        .args(args)
-                        .spawn()
-                    {
-                        Err(error) if error.kind() == ErrorKind::NotFound => {
-                            eprintln!("Command {:?} could not be found", command);
-                            process::exit(1);
-                        },
-                        Err(error) => eprintln!("Error occurred at {:?}: {}", entry, error),
-                        Ok(child) => match child.wait_with_output().await {
-                            Ok(output) => {
-                                let mut stdout = io::stdout().lock();
-                                stdout
-                                    .write_fmt(format_args!("Command {:?} at {:?} returned {}\n", command, entry, output.status))
-                                    .expect("failed writing to stdout");
+    let stderr = &Mutex::new(io::stderr());
+    let stdout = &Mutex::new(io::stdout());
+    ReadDirStream::new(entries).for_each_concurrent(None, |entry| async move {
+        match entry.as_ref().map(DirEntry::path) {
+            Ok(entry)
+                if entry.is_dir() 
+                && !stream::iter(ignored_directories).any(|path| {
+                    let entry = &entry;
+                    async move { fs::canonicalize(entry).await.is_ok_and(|entry| &entry == path) }
+                })
+                .await
+            => { 
+                match Command::new(command)
+                    .current_dir(&entry)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .args(args)
+                    .spawn()
+                {
+                    Err(error) if error.kind() == ErrorKind::NotFound => {
+                        stderr
+                            .lock()
+                            .await
+                            .write_all(format!("Command {:?} could not be found", command).as_bytes())
+                            .await
+                            .expect("failed writing to stderr");
 
-                                stdout
-                                    .write_all(&output.stderr)
-                                    .expect("failed writing to stdout");
-                            }
-                            Err(error) => eprintln!("Error occurred at {:?}: {}", entry, error),
+                        process::exit(1);
+                    },
+                    Err(error) => {
+                        stderr
+                            .lock()
+                            .await
+                            .write_all(format!("Error occurred at {:?}: {}", entry, error).as_bytes())
+                            .await
+                            .expect("failed writing to stderr");
+                    },
+                    Ok(child) => match child.wait_with_output().await {
+                        Ok(output) => {
+                            let mut stdout = stdout.lock().await;
+                            stdout
+                                .write_all(format!("Command {:?} at {:?} returned {}\n", command, entry, output.status).as_bytes())
+                                .await
+                                .expect("failed writing to stdout");
+
+                            stdout
+                                .write_all(&output.stderr)
+                                .await
+                                .expect("failed writing to stdout");
+                        }
+                        Err(error) => {
+                            stderr
+                                .lock()
+                                .await
+                                .write_all(format!("Error occurred at {:?}: {}", entry, error).as_bytes())
+                                .await
+                                .expect("failed writing to stderr");
                         },
-                    }
-                },
-                Err(error) => eprintln!("Error occurred: {}", error),
-                _ => (),
-            }
+                    },
+                }
+            },
+            Err(error) => {
+                stderr
+                    .lock()
+                    .await
+                    .write_all(format!("Error occurred: {}", error).as_bytes())
+                    .await
+                    .expect("failed writing to stderr");
+            },
+            _ => (),
         }
     })
     .await;

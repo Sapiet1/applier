@@ -10,6 +10,6 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs", "io-std", "io-util", "sync"] }
 tokio-stream = { version = "0.1", features = ["fs"] }
 futures = "0.3"
