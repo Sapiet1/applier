@@ -47,3 +47,5 @@ applier --path="./full_of_old_rust_projects" -i="./important_rust_project" cargo
 # Removes any "notes.txt" instance in the subdirectories of the current working directory
 applier rm notes.txt
 ```
+
+The `stdout` stream of the commands are ignored, but the `stderr` stream are piped into `applier`'s `stdout` stream.
