@@ -1,6 +1,6 @@
 [package]
 name = "applier"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "A CLI for applying a command to directories within a directory"
 repository = "https://github.com/Sapiet1/applier"
