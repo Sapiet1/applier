@@ -52,4 +52,4 @@ The `stdout` stream of the commands is ignored, but the `stderr` stream is piped
 
 ## License
 
-This project is dual-licensed under the [MIT License](LICENSE-MIT) and the [Apache License 2.0](LICENSE-APACHE-2.0).
+This project is dual-licensed under the [MIT License](LICENSE-MIT) and the [Apache License 2.0](LICENSE-APACHE).
