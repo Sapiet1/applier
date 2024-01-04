@@ -48,4 +48,8 @@ applier --path="./full_of_old_rust_projects" -i="./important_rust_project" cargo
 applier rm notes.txt
 ```
 
-The `stdout` stream of the commands are ignored, but the `stderr` stream are piped into `applier`'s `stdout` stream.
+The `stdout` stream of the commands is ignored, but the `stderr` stream is piped into `applier`'s `stdout` stream.
+
+### License
+
+This project is dual-licensed under the [MIT License](LICENSE-MIT) and the [Apache License 2.0](LICENSE-APACHE-2.0).
