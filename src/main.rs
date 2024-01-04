@@ -1,8 +1,8 @@
 use std::{
     path::PathBuf,
     ffi::OsString,
-    io::{self, ErrorKind},
-    process,
+    io::{self, Write, ErrorKind},
+    process::{self, Stdio},
     env,
 };
 
@@ -32,13 +32,22 @@ async fn main() {
         process::exit(1)
     }
 
-    let entries = fs::read_dir(cli.path.unwrap_or_else(|| env::current_dir().unwrap_or_else(entries_error_handler)))
+    let directory = cli.path.unwrap_or_else(|| env::current_dir().unwrap_or_else(entries_error_handler));
+    let entries = fs::read_dir(&directory)
         .await
         .unwrap_or_else(entries_error_handler);
 
     let ignored_directories = &*cli.ignore
         .into_iter()
-        .map(fs::canonicalize)
+        .map(|path| {
+            if path.is_relative() {
+                let mut ignored_directory = directory.clone();
+                ignored_directory.push(path);
+                fs::canonicalize(ignored_directory)
+            } else {
+                fs::canonicalize(path)
+            }
+        })
         .collect::<FuturesUnordered<_>>()
         .flat_map_unordered(None, stream::iter)
         .collect::<Vec<_>>()
@@ -58,6 +67,8 @@ async fn main() {
                 => { 
                     match Command::new(command)
                         .current_dir(&entry)
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::piped())
                         .args(args)
                         .spawn()
                     {
@@ -66,15 +77,22 @@ async fn main() {
                             process::exit(1);
                         },
                         Err(error) => eprintln!("Error occurred at {:?}: {}", entry, error),
-                        Ok(mut child) => {
-                            match child.wait().await {
-                                Ok(exit_status) => println!("Command {:?} at {:?} exited with: {}", command, entry, exit_status),
-                                Err(error) => eprintln!("Error occurred at {:?}: {}", entry, error),
+                        Ok(child) => match child.wait_with_output().await {
+                            Ok(output) => {
+                                let mut stdout = io::stdout().lock();
+                                stdout
+                                    .write_fmt(format_args!("Command {:?} at {:?} returned {}\n", command, entry, output.status))
+                                    .expect("failed writing to stdout");
+
+                                stdout
+                                    .write_all(&output.stderr)
+                                    .expect("failed writing to stdout");
                             }
+                            Err(error) => eprintln!("Error occurred at {:?}: {}", entry, error),
                         },
                     }
                 },
-                Err(error) => eprintln!("Error occurred at {:?}: {}", entry, error),
+                Err(error) => eprintln!("Error occurred: {}", error),
                 _ => (),
             }
         }
