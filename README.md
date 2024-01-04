@@ -2,7 +2,7 @@
 
 ## Overview
 
-`applier` is a simple command-line utility written with `clap` to concurrently call a given command to all child directories within a parent directory. It utilizes asynchronous Rust, using the `tokio` and `futures` crates.
+`applier` is a simple command-line utility written with `clap` to concurrently call a given command to all children directories within a parent directory. It utilizes asynchronous Rust, using the `tokio` and `futures` crates.
 
 ## Usage
 
