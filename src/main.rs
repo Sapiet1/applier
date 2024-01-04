@@ -58,73 +58,57 @@ async fn main() {
     let stderr = &Mutex::new(io::stderr());
     let stdout = &Mutex::new(io::stdout());
     ReadDirStream::new(entries).for_each_concurrent(None, |entry| async move {
-        match entry.as_ref().map(DirEntry::path) {
-            Ok(entry)
-                if entry.is_dir() 
-                && !stream::iter(ignored_directories).any(|path| {
-                    let entry = &entry;
-                    async move { fs::canonicalize(entry).await.is_ok_and(|entry| &entry == path) }
-                })
-                .await
-            => { 
-                match Command::new(command)
-                    .current_dir(&entry)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::piped())
-                    .args(args)
-                    .spawn()
-                {
-                    Err(error) if error.kind() == ErrorKind::NotFound => {
-                        stderr
-                            .lock()
-                            .await
-                            .write_all(format!("Command {:?} could not be found", command).as_bytes())
-                            .await
-                            .expect("failed writing to stderr");
+        let (error_message, exit_completely) = 'exit: {
+            let entry = match entry.as_ref().map(DirEntry::path) {
+                Ok(entry)
+                    if entry.is_dir()
+                    && !stream::iter(ignored_directories).any(|path| {
+                        let entry = &entry;
+                        async move { fs::canonicalize(entry).await.is_ok_and(|entry| &entry == path) }
+                    })
+                    .await
+                => entry,
+                Err(error) => break 'exit (format!("Error occurred: {}", error), false),
+                _ => return,
+            };
 
-                        process::exit(1);
-                    },
-                    Err(error) => {
-                        stderr
-                            .lock()
+            match Command::new(command)
+                .current_dir(&entry)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .args(args)
+                .spawn()
+            {
+                Err(error) if error.kind() == ErrorKind::NotFound => break 'exit (format!("Command {:?} could not be found", command), true),
+                Err(error) => break 'exit (format!("Error occurred at {:?}: {}", entry, error), false),
+                Ok(child) => match child.wait_with_output().await {
+                    Ok(output) => {
+                        let mut stdout = stdout.lock().await;
+                        stdout
+                            .write_all(format!("Command {:?} at {:?} returned {}\n", command, entry, output.status).as_bytes())
                             .await
-                            .write_all(format!("Error occurred at {:?}: {}", entry, error).as_bytes())
+                            .expect("failed writing to stdout");
+                        stdout
+                            .write_all(&output.stderr)
                             .await
-                            .expect("failed writing to stderr");
-                    },
-                    Ok(child) => match child.wait_with_output().await {
-                        Ok(output) => {
-                            let mut stdout = stdout.lock().await;
-                            stdout
-                                .write_all(format!("Command {:?} at {:?} returned {}\n", command, entry, output.status).as_bytes())
-                                .await
-                                .expect("failed writing to stdout");
-
-                            stdout
-                                .write_all(&output.stderr)
-                                .await
-                                .expect("failed writing to stdout");
-                        }
-                        Err(error) => {
-                            stderr
-                                .lock()
-                                .await
-                                .write_all(format!("Error occurred at {:?}: {}", entry, error).as_bytes())
-                                .await
-                                .expect("failed writing to stderr");
-                        },
-                    },
+                            .expect("failed writing to stdout");
+                    }
+                    Err(error) => break 'exit (format!("Error occurred at {:?}: {}", entry, error), false),
                 }
-            },
-            Err(error) => {
-                stderr
-                    .lock()
-                    .await
-                    .write_all(format!("Error occurred: {}", error).as_bytes())
-                    .await
-                    .expect("failed writing to stderr");
-            },
-            _ => (),
+            }
+
+            return;
+        };
+
+        stderr
+            .lock()
+            .await
+            .write_all(error_message.as_bytes())
+            .await
+            .expect("failed writing to stderr");
+
+        if exit_completely {
+            process::exit(1);
         }
     })
     .await;
