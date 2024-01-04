@@ -12,7 +12,7 @@ Rust should first be installed on the system. Then, the utility can be installed
 
 ```bash
 # Clone the repository
-git clone https://github.com/Sapiet/applier.git
+git clone https://github.com/Sapiet1/applier.git
 
 # Change into the project directory
 cd applier
