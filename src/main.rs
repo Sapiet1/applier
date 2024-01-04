@@ -1,8 +1,9 @@
 use std::{
     path::PathBuf,
     ffi::OsString,
-    io::ErrorKind,
+    io::{self, ErrorKind},
     process,
+    env,
 };
 
 use clap::{Parser, Subcommand};
@@ -26,19 +27,20 @@ async fn main() {
     let External::Command(command) = cli.command;
     let [command, args @ ..] = command.as_slice() else { unreachable!() };
 
-    let entries = match fs::read_dir(cli.path.unwrap_or(PathBuf::from("./"))).await {
-        Ok(entries) => entries,
-        Err(error) => {
-            eprintln!("Failed while reading the parent directory: {}", error);
-            process::exit(1);
-        },
-    };
+    fn entries_error_handler<T>(error: io::Error) -> T {
+        eprintln!("Failed while reading the parent directory: {}", error);
+        process::exit(1)
+    }
+
+    let entries = fs::read_dir(cli.path.unwrap_or_else(|| env::current_dir().unwrap_or_else(entries_error_handler)))
+        .await
+        .unwrap_or_else(entries_error_handler);
 
     let ignored_directories = &*cli.ignore
         .into_iter()
         .map(fs::canonicalize)
         .collect::<FuturesUnordered<_>>()
-        .flat_map_unordered(None, |path| stream::iter(path))
+        .flat_map_unordered(None, stream::iter)
         .collect::<Vec<_>>()
         .await;
 
