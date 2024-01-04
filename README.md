@@ -39,7 +39,11 @@ Options:
 
 Take note that `COMMAND` should always be listed after the flags. Also, `COMMAND` cannot be a shell command, and therefore `cd`, `echo`, etc. will not run as expected.
 
-If the path is not specified, it will use the current working directory. To ignore multiple child directories, the `-i=<PATH>` can be repeated, which is relative the specified parent directory. Below are example usages:
+If the path is not specified, it will use the current working directory. `-i=<PATH>` is relative to the specified parent directory and can be repeated for multiple paths. Below are example usages:
 ```bash
+# Cleans every cargo directory except for "important_rust_project"
 applier --path="./full_of_old_rust_projects" -i="./important_rust_project" cargo clean
+
+# Removes any "notes.txt" instance in the subdirectories of the current working directory
+applier rm notes.txt
 ```
