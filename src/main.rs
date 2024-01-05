@@ -58,7 +58,7 @@ async fn main() {
     let stderr = &Mutex::new(io::stderr());
     let stdout = &Mutex::new(io::stdout());
     ReadDirStream::new(entries).for_each_concurrent(None, |entry| async move {
-        let (error_message, exit_completely) = 'exit: {
+        let error_message = 'exit: {
             let entry = match entry.as_ref().map(DirEntry::path) {
                 Ok(entry)
                     if entry.is_dir()
@@ -68,8 +68,8 @@ async fn main() {
                     })
                     .await
                 => entry,
-                Err(error) => break 'exit (format!("Error occurred: {}", error), false),
-                _ => return,
+                Ok(_) => return,
+                Err(error) => break 'exit format!("Error occurred: {}", error),
             };
 
             match Command::new(command)
@@ -79,8 +79,6 @@ async fn main() {
                 .args(args)
                 .spawn()
             {
-                Err(error) if error.kind() == ErrorKind::NotFound => break 'exit (format!("Command {:?} could not be found", command), true),
-                Err(error) => break 'exit (format!("Error occurred at {:?}: {}", entry, error), false),
                 Ok(child) => match child.wait_with_output().await {
                     Ok(output) => {
                         let mut stdout = stdout.lock().await;
@@ -92,9 +90,14 @@ async fn main() {
                             .write_all(&output.stderr)
                             .await
                             .expect("failed writing to stdout");
-                    }
-                    Err(error) => break 'exit (format!("Error occurred at {:?}: {}", entry, error), false),
+                    },
+                    Err(error) => break 'exit format!("Error occurred at {:?}: {}", entry, error),
                 }
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    eprintln!("Command {:?} could not be found", command);
+                    process::exit(1);
+                },
+                Err(error) => break 'exit format!("Error occurred at {:?}: {}", entry, error),
             }
 
             return;
@@ -106,10 +109,6 @@ async fn main() {
             .write_all(error_message.as_bytes())
             .await
             .expect("failed writing to stderr");
-
-        if exit_completely {
-            process::exit(1);
-        }
     })
     .await;
 }
