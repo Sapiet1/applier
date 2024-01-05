@@ -19,7 +19,8 @@ use tokio_stream::wrappers::ReadDirStream;
 
 use futures::{
     StreamExt,
-    stream::{self, FuturesUnordered},
+    stream,
+    future,
 };
 
 #[tokio::main]
@@ -29,17 +30,17 @@ async fn main() {
     let External::Command(command) = cli.command;
     let [command, args @ ..] = command.as_slice() else { unreachable!() };
 
-    fn entries_error_handler<T>(error: io::Error) -> T {
+    let directory = cli.path.unwrap_or_else(|| env::current_dir().unwrap_or_else(|error| {
         eprintln!("Failed while reading the parent directory: {}", error);
-        process::exit(1)
-    }
+        process::exit(1);
+    }));
 
-    let directory = cli.path.unwrap_or_else(|| env::current_dir().unwrap_or_else(entries_error_handler));
-    let entries = fs::read_dir(&directory)
-        .await
-        .unwrap_or_else(entries_error_handler);
+    let entries = fs::read_dir(&directory).await.unwrap_or_else(|error| {
+        eprintln!("Failed while reading the parent directory: {}", error);
+        process::exit(1);
+    });
 
-    let ignored_directories = &*cli.ignore
+    let ignored_directories = &*future::try_join_all(cli.ignore
         .into_iter()
         .map(|path| {
             if path.is_relative() {
@@ -49,66 +50,72 @@ async fn main() {
             } else {
                 fs::canonicalize(path)
             }
-        })
-        .collect::<FuturesUnordered<_>>()
-        .flat_map_unordered(None, stream::iter)
-        .collect::<Vec<_>>()
-        .await;
+        }))
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("Failed while reading ignored directories: {}", error);
+            process::exit(1);
+        });
 
     let stderr = &Mutex::new(io::stderr());
     let stdout = &Mutex::new(io::stdout());
     ReadDirStream::new(entries).for_each_concurrent(None, |entry| async move {
-        let error_message = 'exit: {
-            let entry = match entry.as_ref().map(DirEntry::path) {
-                Ok(entry)
-                    if entry.is_dir()
-                    && !stream::iter(ignored_directories).any(|path| {
-                        let entry = &entry;
-                        async move { fs::canonicalize(entry).await.is_ok_and(|entry| &entry == path) }
-                    })
-                    .await
-                => entry,
-                Ok(_) => return,
-                Err(error) => break 'exit format!("Error occurred: {}", error),
-            };
+        let result = async move {
+            let entry = entry
+                .as_ref()
+                .map(DirEntry::path)
+                .map_err(|error| format!("Error occurred: {}", error))?;
 
-            match Command::new(command)
+            if !entry.is_dir()
+            || stream::iter(ignored_directories).any(|path| {
+                let entry = &entry;
+                async move { fs::canonicalize(entry).await.is_ok_and(|entry| &entry == path) }
+            })
+            .await
+            {
+                return Ok(());
+            }
+
+            let output = Command::new(command)
                 .current_dir(&entry)
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .args(args)
                 .spawn()
-            {
-                Ok(child) => match child.wait_with_output().await {
-                    Ok(output) => {
-                        let mut stdout = stdout.lock().await;
-                        stdout
-                            .write_all(format!("Command {:?} at {:?} returned {}\n", command, entry, output.status).as_bytes())
-                            .await
-                            .expect("failed writing to stdout");
-                        stdout
-                            .write_all(&output.stderr)
-                            .await
-                            .expect("failed writing to stdout");
-                    },
-                    Err(error) => break 'exit format!("Error occurred at {:?}: {}", entry, error),
-                }
-                Err(error) if error.kind() == ErrorKind::NotFound => {
-                    eprintln!("Command {:?} could not be found", command);
-                    process::exit(1);
-                },
-                Err(error) => break 'exit format!("Error occurred at {:?}: {}", entry, error),
-            }
+                .map_err(|error| {
+                    if error.kind() == ErrorKind::NotFound {
+                        eprintln!("Command {:?} could not be found", command);
+                        process::exit(1);
+                    } else {
+                        format!("Error occurred at {:?}: {}", entry, error)
+                    }
+                })?
+                .wait_with_output()
+                .await
+                .map_err(|error| format!("Error occurred at {:?}: {}", entry, error))?;
 
-            return;
-        };
+            let mut stdout = stdout.lock().await;
+            stdout
+                .write_all(format!("Command {:?} at {:?} returned {}\n", command, entry, output.status).as_bytes())
+                .await
+                .expect("failed writing to stdout");
+            stdout
+                .write_all(&output.stderr)
+                .await
+                .expect("failed writing to stdout");
 
-        stderr
-            .lock()
-            .await
-            .write_all(error_message.as_bytes())
-            .await
-            .expect("failed writing to stderr");
+            Ok::<(), String>(())
+        }
+        .await;
+
+        if let Err(error_message) = result {
+            stderr
+                .lock()
+                .await
+                .write_all(error_message.as_bytes())
+                .await
+                .expect("failed writing to stderr");
+        }
     })
     .await;
 }
