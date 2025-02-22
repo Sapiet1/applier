@@ -4,9 +4,9 @@ use std::{
     process::Output
 };
 
-use applier::{Cli, CliParsed, ProcessError};
 use anyhow::{Context, Error};
 use futures::stream::StreamExt;
+use subdo::{Cli, CliParsed, ProcessError};
 
 use tokio::{
     fs::ReadDir,
@@ -22,9 +22,9 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "json")]
     match cli.mode {
-        applier::json::Mode::Standard => (),
-        applier::json::Mode::Json => return execute_json(&cli, entries, serde_json::to_string).await,
-        applier::json::Mode::JsonPretty => return execute_json(&cli, entries, serde_json::to_string_pretty).await,
+        subdo::json::Mode::Standard => (),
+        subdo::json::Mode::Json => return execute_json(&cli, entries, serde_json::to_string).await,
+        subdo::json::Mode::JsonPretty => return execute_json(&cli, entries, serde_json::to_string_pretty).await,
     }
 
     execute_standard(&cli, entries).await;
@@ -41,20 +41,20 @@ async fn execute_standard(cli: &CliParsed, entries: ReadDir) {
             Ok(processed) => processed,
             Err(error) => {
                 let error = Error::from(error).context("Failed to execute command");
-                applier::async_write!(stderr, "{:?}\n", error);
+                subdo::async_write!(stderr, "{:?}\n", error);
                 return;
             },
         };
 
-        applier::async_write!(stdout, "{}:\n", entry.display());
-        applier::async_write!(as [u8] => stdout, &output.stdout);
+        subdo::async_write!(stdout, "{}:\n", entry.display());
+        subdo::async_write!(as [u8] => stdout, &output.stdout);
 
         if output.stderr.is_empty() {
             return;
         }
 
-        applier::async_write!(stderr, "\nWarning:\n");
-        applier::async_write!(as [u8] => stderr, &output.stderr);
+        subdo::async_write!(stderr, "\nWarning:\n");
+        subdo::async_write!(as [u8] => stderr, &output.stderr);
     };
 
     let stdout = &Mutex::new(io::stdout());
@@ -69,30 +69,30 @@ async fn execute_standard(cli: &CliParsed, entries: ReadDir) {
         execute(processed, &mut stdout, &mut stderr).await;
 
         while let Some(processed) = processed_entries.next().await {
-            applier::async_write!(stdout, "\n");
+            subdo::async_write!(stdout, "\n");
             execute(processed, &mut stdout, &mut stderr).await;
         }
     }
 
-    applier::async_write!(flush => stdout.lock().await);
-    applier::async_write!(flush => stderr.lock().await);
+    subdo::async_write!(flush => stdout.lock().await);
+    subdo::async_write!(flush => stderr.lock().await);
 }
 
 #[cfg(feature = "json")]
 async fn execute_json<
-    F: FnOnce(&applier::json::ProcessedEntries) -> Result<String, serde_json::Error>,
+    F: FnOnce(&subdo::json::ProcessedEntries) -> Result<String, serde_json::Error>,
 >(cli: &CliParsed, entries: ReadDir, formatter: F) -> anyhow::Result<()>
 {
     let processed_entries = cli
         .process(entries)
-        .collect::<applier::json::ProcessedEntries>()
+        .collect::<subdo::json::ProcessedEntries>()
         .await;
 
     let json = formatter(&processed_entries).context("Failed to JSONify outputs")?;
 
     let mut stdout = io::stdout();
-    applier::async_write!(stdout, "{}\n", json);
-    applier::async_write!(flush => stdout);
+    subdo::async_write!(stdout, "{}\n", json);
+    subdo::async_write!(flush => stdout);
 
     Ok(())
 }

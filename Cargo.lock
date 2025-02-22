@@ -30,22 +30,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b964d184e89d9b6b67dd2715bc8e74cf3107fb2b529990c90cf517326150bf4"
 
 [[package]]
-name = "applier"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures",
- "humantime",
- "num_cpus",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,6 +345,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f92a496fb766b417c996b9c5e57daf2f7ad3b0bebe1ccfca4856390e3d3bb67"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "subdo"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "humantime",
+ "num_cpus",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

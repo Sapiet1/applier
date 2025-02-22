@@ -26,7 +26,7 @@ use tokio::{
 use tokio_stream::wrappers::ReadDirStream;
 
 #[derive(Parser)]
-#[command(name = "applier", version, about = "A CLI for applying a command to directories within a directory", long_about = None)]
+#[command(name = "subdo", version, about = "A CLI for applying a command to directories within a directory", long_about = None)]
 pub struct Cli {
     /// A path to specify for the parent directory
     #[arg(long)]
