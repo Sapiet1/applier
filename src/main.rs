@@ -1,161 +1,98 @@
 use std::{
-    env,
-    ffi::OsString,
-    io::ErrorKind,
     path::PathBuf,
-    process::{self, Stdio},
+    pin,
+    process::Output
 };
 
-use clap::{Parser, Subcommand};
+use applier::{Cli, CliParsed, ProcessError};
+use anyhow::{Context, Error};
+use futures::stream::StreamExt;
 
 use tokio::{
-    fs::{self, DirEntry},
-    io::{self, AsyncWriteExt},
-    process::Command,
-    sync::Mutex,
+    fs::ReadDir,
+    io::{self, AsyncWriteExt, Stderr, Stdout},
+    sync::{Mutex, MutexGuard}
 };
 
-use tokio_stream::wrappers::ReadDirStream;
-
-use futures::{future, stream, StreamExt};
-
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-
-    let External::Command(command) = cli.command;
-    let [command, args @ ..] = command.as_slice() else {
-        unreachable!()
-    };
-
-    let parent_error = |error: io::Error| -> ! {
-        handler::exit!("Failed while reading the parent directory: {}", error)
-    };
-
-    let directory = cli
-        .path
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|error| parent_error(error)));
-
-    let entries = fs::read_dir(&directory)
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    let (entries, cli) = Cli::parse()
         .await
-        .unwrap_or_else(|error| parent_error(error));
+        .context("Failed to parse CLI")?;
 
-    let ignored_directories = &*future::try_join_all(cli.ignore.into_iter().map(|path| {
-        if path.is_relative() {
-            let mut ignored_directory = directory.clone();
-            ignored_directory.push(path);
-            fs::canonicalize(ignored_directory)
-        } else {
-            fs::canonicalize(path)
-        }
-    }))
-    .await
-    .unwrap_or_else(|error| handler::exit!("Failed while reading ignored directories: {}", error));
-
-    let stderr = &Mutex::new(io::stderr());
-    let stdout = &Mutex::new(io::stdout());
-    ReadDirStream::new(entries)
-        .for_each_concurrent(None, |entry| async move {
-            let result = async move {
-                let entry = entry
-                    .as_ref()
-                    .map(DirEntry::path)
-                    .map_err(|error| format!("Error occurred: {}", error))?;
-
-                let ignore = !entry.is_dir()
-                    || stream::iter(ignored_directories)
-                        .any(|path| {
-                            let entry = &entry;
-                            async move {
-                                fs::canonicalize(entry)
-                                    .await
-                                    .is_ok_and(|entry| &entry == path)
-                            }
-                        })
-                        .await;
-
-                if ignore {
-                    return Ok(());
-                }
-
-                let output = Command::new(command)
-                    .current_dir(&entry)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::piped())
-                    .args(args)
-                    .spawn()
-                    .map_err(|error| {
-                        if error.kind() == ErrorKind::NotFound {
-                            handler::exit!("Command {:?} could not be found", command)
-                        } else {
-                            format!("Error occurred at {:?}: {}", entry, error)
-                        }
-                    })?
-                    .wait_with_output()
-                    .await
-                    .map_err(|error| format!("Error occurred at {:?}: {}", entry, error))?;
-
-                let mut stdout = stdout.lock().await;
-                stdout
-                    .write_all(
-                        format!(
-                            "Command {:?} at {:?} returned {}\n",
-                            command, entry, output.status
-                        )
-                        .as_bytes(),
-                    )
-                    .await
-                    .expect("failed writing to stdout");
-                stdout
-                    .write_all(&output.stderr)
-                    .await
-                    .expect("failed writing to stdout");
-
-                Ok::<(), String>(())
-            }
-            .await;
-
-            if let Err(error_message) = result {
-                stderr
-                    .lock()
-                    .await
-                    .write_all(error_message.as_bytes())
-                    .await
-                    .expect("failed writing to stderr");
-            }
-        })
-        .await;
-}
-
-#[derive(Parser)]
-#[command(name = "applier", version, about = "A CLI for applying a command to directories within a directory", long_about = None)]
-struct Cli {
-    /// A path to specify for the parent directory
-    #[arg(long, require_equals = true)]
-    path: Option<PathBuf>,
-    /// A path of the children directories to ignore
-    #[arg(short, long, require_equals = true, value_name = "PATH")]
-    ignore: Vec<PathBuf>,
-    /// The command to execute
-    #[command(subcommand)]
-    command: External,
-}
-
-#[derive(Subcommand)]
-enum External {
-    #[command(external_subcommand)]
-    Command(Vec<OsString>),
-}
-
-mod handler {
-    macro_rules! exit {
-        ($( $tokens:tt )*) => {
-            {
-                eprintln!($( $tokens )*);
-                process::exit(1);
-            }
-        };
+    #[cfg(feature = "json")]
+    match cli.mode {
+        applier::json::Mode::Standard => (),
+        applier::json::Mode::Json => return execute_json(&cli, entries, serde_json::to_string).await,
+        applier::json::Mode::JsonPretty => return execute_json(&cli, entries, serde_json::to_string_pretty).await,
     }
 
-    pub(crate) use exit;
+    execute_standard(&cli, entries).await;
+    Ok(())
+}
+
+async fn execute_standard(cli: &CliParsed, entries: ReadDir) {
+    let execute = async |
+        processed: Result<(PathBuf, Output), ProcessError>,
+        stdout: &mut MutexGuard<'_, Stdout>,
+        stderr: &mut MutexGuard<'_, Stderr>,
+    | {
+        let (entry, output) = match processed {
+            Ok(processed) => processed,
+            Err(error) => {
+                let error = Error::from(error).context("Failed to execute command");
+                applier::async_write!(stderr, "{:?}\n", error);
+                return;
+            },
+        };
+
+        applier::async_write!(stdout, "{}:\n", entry.display());
+        applier::async_write!(as [u8] => stdout, &output.stdout);
+
+        if output.stderr.is_empty() {
+            return;
+        }
+
+        applier::async_write!(stderr, "\nWarning:\n");
+        applier::async_write!(as [u8] => stderr, &output.stderr);
+    };
+
+    let stdout = &Mutex::new(io::stdout());
+    let stderr = &Mutex::new(io::stderr());
+
+    let mut processed_entries = pin::pin!(cli.process(entries));
+
+    if let Some(processed) = processed_entries.next().await {
+        let mut stdout = stdout.lock().await;
+        let mut stderr = stderr.lock().await;
+
+        execute(processed, &mut stdout, &mut stderr).await;
+
+        while let Some(processed) = processed_entries.next().await {
+            applier::async_write!(stdout, "\n");
+            execute(processed, &mut stdout, &mut stderr).await;
+        }
+    }
+
+    applier::async_write!(flush => stdout.lock().await);
+    applier::async_write!(flush => stderr.lock().await);
+}
+
+#[cfg(feature = "json")]
+async fn execute_json<
+    F: FnOnce(&applier::json::ProcessedEntries) -> Result<String, serde_json::Error>,
+>(cli: &CliParsed, entries: ReadDir, formatter: F) -> anyhow::Result<()>
+{
+    let processed_entries = cli
+        .process(entries)
+        .collect::<applier::json::ProcessedEntries>()
+        .await;
+
+    let json = formatter(&processed_entries).context("Failed to JSONify outputs")?;
+
+    let mut stdout = io::stdout();
+    applier::async_write!(stdout, "{}\n", json);
+    applier::async_write!(flush => stdout);
+
+    Ok(())
 }
