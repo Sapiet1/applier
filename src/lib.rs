@@ -35,8 +35,8 @@ pub struct Cli {
     #[arg(short, long, value_name = "PATH", value_delimiter = ' ', num_args = 1..)]
     ignore: Vec<PathBuf>,
     /// Max number of concurrent tasks
-    #[arg(short, long, default_value_t = num_cpus::get(), value_parser = clap::value_parser!(u16).range(1..))]
-    jobs: usize,
+    #[arg(short, long, default_value_t = num_cpus::get() as u16, value_parser = clap::value_parser!(u16).range(1..))]
+    jobs: u16,
     /// Max duration for any given process
     #[arg(short, long, value_parser = humantime::parse_duration)]
     timeout: Option<Duration>,
@@ -95,7 +95,7 @@ impl Cli {
 
         #[cfg(feature = "json")]
         let mode = cli.mode;
-        let jobs = cli.jobs;
+        let jobs = usize::from(cli.jobs);
         let timeout = cli.timeout;
 
         let External::Command(command) = cli.command;
